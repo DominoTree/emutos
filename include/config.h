@@ -899,6 +899,13 @@
 #endif
 
 /*
+ * Set CONF_WITH_ULTRASATAN_CLOCK to 1 to enable ULTRASATAN clock support
+ */
+#ifndef CONF_WITH_ULTRASATAN_CLOCK
+# define CONF_WITH_ULTRASATAN_CLOCK 1
+#endif
+
+/*
  * Set CONF_WITH_CARTRIDGE to 1 to enable ROM port cartridge support
  */
 #ifndef CONF_WITH_CARTRIDGE

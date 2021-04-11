@@ -25,6 +25,19 @@ void detect_megartc(void);
 void detect_icdrtc(void);
 #endif /* CONF_WITH_ICDRTC */
 
+#if CONF_WITH_ULTRASATAN_CLOCK
+void detect_ultrasatan(void);
+long ultrasatan_endcmd(short mode);
+long ultrasatan_hdone(void);
+long ultrasatan_wait_dma_cmpl(unsigned long t_ticks);
+long ultrasatan_qdone(void);
+long ultrasatan_fdone(void);
+ULONG ultrasatangetdt(void);
+UBYTE ultrasatansetdt(ULONG dt);
+UBYTE ultrasatan_readfw(UBYTE ACSI_id, UBYTE *buffer);
+UBYTE ultrasatan_longrw(UBYTE ReadNotWrite, UBYTE *cmd, UBYTE *buffer);
+#endif /* CONF_WITH_ULTRASATAN_CLOCK */
+
 #if CONF_WITH_MONSTER
 void detect_monster_rtc(void);
 #endif /* CONF_WITH_MONSTER */

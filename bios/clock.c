@@ -46,7 +46,7 @@ static UWORD bcd2int(UBYTE a)
 }
 #endif
 
-#if (CONF_WITH_ICDRTC || CONF_WITH_MONSTER || CONF_WITH_MEGARTC || CONF_WITH_NVRAM || CONF_WITH_IKBD_CLOCK)
+#if (CONF_WITH_ICDRTC || CONF_WITH_MONSTER || CONF_WITH_MEGARTC || CONF_WITH_NVRAM || CONF_WITH_IKBD_CLOCK || CONF_WITH_ULTRASATAN_CLOCK)
 /*
  * structures used by extract_date(), extract_time()
  */
@@ -1066,6 +1066,255 @@ static void isetdt(ULONG dt)
 
 #endif /* CONF_WITH_IKBD_CLOCK */
 
+#if CONF_WITH_ULTRASATAN_CLOCK /* CONF_WITH_ULTRASATAN_CLOCK */
+
+// Based on public source originally written by Jookie
+
+#define FLOCK (*(short *)0x043E) /* Floppy lock variable */
+
+#define OK         0L           /* OK status */
+#define ERROR     -1L           /* ERROR status (timeout) */
+#define ERRORL    -2L           /* ERROR status (long timeout) */
+
+/* Timing constants */
+#define LTIMEOUT   600L         /* long-timeout 3 sec */
+#define STIMEOUT    20L         /* short-timeout 100 msec */
+
+#define HZ_200     (*(unsigned long *) 0x04BA) /* 200 Hz system clock */
+
+SBYTE ultrasatan_id;
+UBYTE *uspBuffer;
+UBYTE usBuffer[520];
+
+int has_ultrasatan;
+
+void detect_ultrasatan(void)
+{
+    KDEBUG(("UltraSatan Init\n"));
+    UBYTE res, i;
+    ULONG toEven;
+
+    toEven = (ULONG)&usBuffer[0];
+
+    if (toEven & 0x0001) /* not even number? */
+        toEven++;
+
+    uspBuffer = (UBYTE *)toEven;
+    ultrasatan_id = -1;
+
+    for (i = 0; i < 8; i++)
+    {
+        KDEBUG(("Looking for UltraSatan at ACSI ID %d\n", i));
+        res = ultrasatan_readfw(i, uspBuffer); /* try to read FW name */
+        if (res == 1) /* if found the US */
+        {
+            KDEBUG(("UltraSatan found at ACSI ID %d\n", i));
+            ultrasatan_id = i; /* store the ACSI ID of UltraSatan */
+            has_ultrasatan = 1;
+            return;
+        }
+    }
+
+    KDEBUG(("Failed to detect UltraSatan\n"));
+}
+
+UBYTE ultrasatansetdt(ULONG dt) //write clock to ultrasatan
+{
+    UWORD newYear, newMonth, newDay;
+    UWORD newHour, newMinute, newSecond;
+    UBYTE res;
+    UBYTE cmd[] = {0x1f, 0x20, 'U', 'S', 'W', 'r', 'C', 'l', 'R', 'T', 'C'};
+
+    struct ymd date;
+    struct hms time;
+
+    extract_date(&date, HIWORD(dt));
+    extract_time(&time, LOWORD(dt));
+
+    KDEBUG(("New clock %d-%d-%d %d:%d:%d\n", date.year - 20, date.month, date.day, time.hour, time.minute, time.second));
+
+    memset(uspBuffer, 0, 512);
+    uspBuffer[0] = 'R';
+    uspBuffer[1] = 'T';
+    uspBuffer[2] = 'C';
+
+    uspBuffer[3] = (UBYTE)(date.year - 20);
+    uspBuffer[4] = date.month;
+    uspBuffer[5] = date.day;
+    uspBuffer[6] = time.hour;
+    uspBuffer[7] = time.minute;
+    uspBuffer[8] = time.second;
+
+    KDEBUG(("SETTING CLOCK\n"));
+
+    cmd[0] = 0x1f | (ultrasatan_id << 5);
+    res = ultrasatan_longrw(0, cmd, uspBuffer);         /* set clock */
+
+    if(res != OK)
+        KDEBUG(("FAILED TO SET CLOCK\n"));
+        return 0;
+
+    KDEBUG(("CLOCK SET\n"));
+    return 1;
+}
+
+ULONG ultrasatangetdt(void) //read clock from ultrasatan
+{
+    UBYTE hour, minute, second, day, month;
+    UWORD year;
+
+    UWORD date, time;
+
+    UBYTE res;
+    UBYTE cmd[] = {0x1f, 0x20, 'U', 'S', 'R', 'd', 'C', 'l', 'R', 'T', 'C'};
+
+    memset(uspBuffer, 0, 512);
+
+    cmd[0] = 0x1f | (ultrasatan_id << 5);
+    res = ultrasatan_longrw(1, cmd, uspBuffer); /* read clock */
+
+    if (res != OK)
+        return 0;
+
+    if (uspBuffer[0] != 'R' || uspBuffer[1] != 'T' || uspBuffer[2] != 'C') /* if bad format */
+        return 0;
+
+    year = ((UWORD)uspBuffer[3]) + 2000; //"21"
+    month = uspBuffer[4];
+    day = uspBuffer[5];
+    hour = uspBuffer[6];
+    minute = uspBuffer[7];
+    second = uspBuffer[8];
+
+    KDEBUG(("Clock data %d-%d-%d %d:%d:%d\n", uspBuffer[3], month, day, hour, minute, second));
+
+    date = (year - 1980) << 9 | (month & 0xf) << 5 | (day & 0x1f);
+    time = (hour << 11) | (minute << 5) | (second >> 1);
+
+    return MAKE_ULONG(date, time);
+}
+
+UBYTE ultrasatan_readfw(UBYTE ACSI_id, UBYTE *buffer)
+{
+    UWORD res;
+    UBYTE cmd[] = {0x1f, 0x20, 'U', 'S', 'C', 'u', 'r', 'n', 't', 'F', 'W'};
+
+    cmd[0] = 0x1f | (ACSI_id << 5);
+    memset(buffer, 0, 512); /* clear the buffer */
+
+    res = ultrasatan_longrw(1, cmd, buffer); /* read name and version of current FW */
+
+    if (res != OK) /* if failed, return FALSE */
+        return 0;
+
+    return 1; /* success */
+}
+
+UBYTE ultrasatan_longrw(UBYTE ReadNotWrite, UBYTE *cmd, UBYTE *buffer)
+{
+    ULONG status;
+    UWORD i;
+
+    FLOCK = -1;            /* disable FDC operations */
+    set_dma_addr(buffer); /* setup DMA transfer address */
+
+    DMA->control = DMA_FLOPPY | DMA_CS_ACSI; /* write 1st byte (0) with A1 low */
+    DMA->data = cmd[0];
+    DMA->control = DMA_FLOPPY | DMA_CS_ACSI | DMA_A0; /* A1 high again */
+
+    for (i = 1; i < 10; i++)
+    {
+        if (ultrasatan_qdone() != OK) /* wait for ack */
+        {
+            ultrasatan_hdone();              /* restore DMA device to normal */
+            return ERROR;
+        }
+
+        DMA->data = cmd[i];
+        DMA->control = DMA_FLOPPY | DMA_CS_ACSI | DMA_A0;
+    }
+
+    if (ultrasatan_qdone() != OK) /* wait for ack */
+    {
+        ultrasatan_hdone();              /* restore DMA device to normal */
+        return ERROR;
+    }
+
+    if (ReadNotWrite == 1)
+    {
+        DMA->control = DMA_WRBIT | DMA_FLOPPY | DMA_SCREG; /* clear FIFO = toggle R/W bit */
+        DMA->control = DMA_FLOPPY | DMA_SCREG;          /* and select sector count reg */
+
+        DMA->data = 1;             /* write sector cnt to DMA device */
+        DMA->control = DMA_FLOPPY | DMA_CS_ACSI | DMA_A0; /* select DMA data register again */
+
+        DMA->data = cmd[10];
+        DMA->control = 0; /* start DMA transfer */
+
+        status = ultrasatan_endcmd(DMA_FLOPPY | DMA_CS_ACSI | DMA_A0); /* wait for DMA completion */
+    }
+    else
+    {
+        DMA->control = DMA_FLOPPY | DMA_SCREG;          /* clear FIFO = toggle R/W bit */
+        DMA->control = DMA_WRBIT | DMA_FLOPPY | DMA_SCREG; /* and select sector count reg */
+
+        DMA->data = 1;                      /* write sector cnt to DMA device */
+        DMA->control = DMA_WRBIT | DMA_FLOPPY | DMA_CS_ACSI | DMA_A0; /* select DMA data register again */
+
+        DMA->data = cmd[10];
+        DMA->control = DMA_WRBIT; /* start DMA transfer */
+
+        status = ultrasatan_endcmd(DMA_WRBIT | DMA_FLOPPY | DMA_CS_ACSI | DMA_A0); /* wait for DMA completion */
+    }
+
+    ultrasatan_hdone();              /* restore DMA device to normal */
+    return status;
+}
+
+long ultrasatan_endcmd(short mode)
+{
+    if (ultrasatan_fdone() != OK) /* wait for operation done ack */
+        return (ERRORL);
+
+    DMA->control = mode;                    /* write mode word to mode register */
+    return ((long)(DMA->data & 0x00FF)); /* return completion byte */
+}
+
+long ultrasatan_hdone(void)
+{
+    DMA->control = DMA_FLOPPY;         /* restore DMA mode register */
+    FLOCK = 0;                  /* FDC operations may get going again */
+    return ((long)DMA->control); /* read and return DMA status register */
+}
+
+long ultrasatan_wait_dma_cmpl(unsigned long t_ticks)
+{
+    unsigned long to_count;
+
+    to_count = t_ticks + HZ_200; /* calc value timer must get to */
+
+    do
+    {
+        if ((MFP_BASE->gpip & 0x20) == 0) /* Poll DMA IRQ interrupt */
+            return (OK);                /* got interrupt, then OK */
+
+    } while (HZ_200 <= to_count); /* check timer */
+
+    return (ERROR); /* no interrupt, and timer expired, */
+}
+
+long ultrasatan_qdone(void)
+{
+    return (ultrasatan_wait_dma_cmpl(STIMEOUT));
+}
+
+long ultrasatan_fdone(void)
+{
+    return (ultrasatan_wait_dma_cmpl(LTIMEOUT));
+}
+
+#endif /* CONF_WITH_ULTRASATAN_CLOCK */
+
 /* internal init */
 
 void clock_init(void)
@@ -1144,6 +1393,9 @@ void clock_init(void)
             isetdt(DEFAULT_DATETIME);
     }
 #endif /* CONF_WITH_IKBD_CLOCK */
+#if CONF_WITH_ULTRASATAN_CLOCK
+    detect_ultrasatan();
+#endif
 }
 
 /* xbios functions */
@@ -1182,6 +1434,12 @@ void settime(LONG time)
         icdsetdt(time);
     }
 #endif  /* CONF_WITH_ICDRTC */
+#if CONF_WITH_ULTRASATAN_CLOCK
+    else if (has_ultrasatan)
+    {
+        ultrasatansetdt(time);
+    }
+#endif /* CONF_WITH_ULTRASATAN_CLOCK */
     else
     {
 #if CONF_WITH_IKBD_CLOCK
@@ -1232,6 +1490,12 @@ LONG gettime(void)
         return icdgetdt();
     }
 #endif  /* CONF_WITH_ICDRTC */
+#if CONF_WITH_ULTRASATAN_CLOCK
+    else if (has_ultrasatan)
+    {
+        return ultrasatangetdt();
+    }
+#endif /* CONF_WITH_ULTRASATAN_CLOCK */
     else
     {
 #if CONF_WITH_IKBD_CLOCK
